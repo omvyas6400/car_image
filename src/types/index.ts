@@ -67,3 +67,19 @@ export const DOWNLOAD_QUALITIES: { value: DownloadQuality; label: string; dimens
   { value: 'medium', label: 'Medium', dimensions: '1280x720' },
   { value: 'low', label: 'Low', dimensions: '640x480' },
 ]
+
+export interface UploadImageData {
+  file: File;
+  preview: string;
+  name: string;
+}
+
+export interface UploadFormProps {
+  imageData: UploadImageData | null;
+  onCancel: () => void;
+  onUpload: () => void;
+}
+
+export interface DragDropZoneProps {
+  onImageSelected: (imageData: UploadImageData) => void;
+}

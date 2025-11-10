@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
-import { UploadForm } from '../components/dashboard/UploadForm'
 import { MyUploads } from '../components/dashboard/MyUploads'
 import { UserStats } from '../components/dashboard/UserStats'
 import { getUserImages } from '../lib/supabaseQueries'
 import { useAuth } from '../hooks/useAuth'
 import { Image } from '../types'
 import { Loader2 } from 'lucide-react'
+import UploadDashboard from './dashboard/UploadDashboard'
 
-export const Dashboard = () => {
+const Dashboard = () => {
   const { user } = useAuth()
   const [images, setImages] = useState<Image[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,7 +37,7 @@ export const Dashboard = () => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-8">
-            <UploadForm onUploadSuccess={loadUserImages} />
+            <UploadDashboard onUploadSuccess={loadUserImages} />
 
             {loading ? (
               <div className="flex items-center justify-center py-20">
@@ -56,3 +56,5 @@ export const Dashboard = () => {
     </div>
   )
 }
+
+export default Dashboard

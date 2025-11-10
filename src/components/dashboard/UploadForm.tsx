@@ -1,173 +1,331 @@
-import { useState, useRef, DragEvent } from 'react'
-import { Cloud, X, AlertCircle, Loader2, Check } from 'lucide-react'
+import { useState, useRef } from 'react'
+import { Loader2, X, Wand2, AlertCircle, Check } from 'lucide-react'
+import { generateImageMetadata, regenerateField } from '../../lib/aiService'
 import { uploadImage } from '../../lib/supabaseQueries'
 import { useAuth } from '../../hooks/useAuth'
-import { CAR_CATEGORIES, CarCategory } from '../../types'
+import { useToast } from '../../hooks/useToast'
+import { CAR_CATEGORIES, CarCategory, UploadImageData } from '../../types'
+import DragDropZone from './DragDropZone'
+import { Button } from '../common/Button'
+import { UploadLoader } from '../common/UploadLoader'
 
 interface UploadFormProps {
-  onUploadSuccess: () => void
+  imageData: UploadImageData | null
+  onCancel: () => void
+  onUpload: () => void
 }
 
-export const UploadForm = ({ onUploadSuccess }: UploadFormProps) => {
+// Constants
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+const MAX_HASHTAGS = 8
+const AUTO_CLEAR_ERROR_DELAY = 5000
+
+export const UploadForm = ({
+  imageData,
+  onCancel,
+  onUpload,
+}: UploadFormProps) => {
   const { user } = useAuth()
-  const [file, setFile] = useState<File | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
+  const { showToast } = useToast()
+  const errorTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  
+  const [file, setFile] = useState<File | null>(imageData?.file || null)
+  const [preview, setPreview] = useState<string | null>(
+    imageData?.preview || null
+  )
   const [formData, setFormData] = useState({
-    image_name: '',
+    image_name: imageData?.name || '',
     description: '',
     category: '' as CarCategory | '',
     hashtags: '',
   })
   const [loading, setLoading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
+  const [showUploadLoader, setShowUploadLoader] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
-  const [isDragOver, setIsDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [regenerating, setRegenerating] = useState<string>('')
 
-  const validateAndSetFile = (selectedFile: File) => {
-    if (selectedFile.size > 5 * 1024 * 1024) {
-      setError('File size must be less than 5MB')
-      return false
+  // Auto-clear error after delay
+  const setErrorWithAutoClear = (message: string) => {
+    setError(message)
+    
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current)
     }
-
-    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
-    if (!validTypes.includes(selectedFile.type)) {
-      setError('Please select a valid image file (.jpg, .png, .webp)')
-      return false
-    }
-
-    setFile(selectedFile)
-    setError('')
-
-    const reader = new FileReader()
-    reader.onloadend = () => {
-      setPreview(reader.result as string)
-    }
-    reader.readAsDataURL(selectedFile)
-    return true
+    
+    errorTimeoutRef.current = setTimeout(() => {
+      setError('')
+    }, AUTO_CLEAR_ERROR_DELAY)
   }
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0]
-    if (selectedFile) {
-      validateAndSetFile(selectedFile)
+  // Validate file before setting
+  const validateFile = (selectedFile: File): string | null => {
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      return `File size exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`
     }
-  }
-
-  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(true)
-  }
-
-  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-  }
-
-  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragOver(false)
-
-    const droppedFile = e.dataTransfer.files[0]
-    if (droppedFile) {
-      validateAndSetFile(droppedFile)
+    
+    if (!ALLOWED_TYPES.includes(selectedFile.type)) {
+      return `Invalid file type. Allowed: ${ALLOWED_TYPES.join(', ')}`
     }
-  }
-
-  const handleClick = () => {
-    fileInputRef.current?.click()
+    
+    return null
   }
 
   const handleRemoveFile = () => {
     setFile(null)
     setPreview(null)
+    setError('')
+    onCancel()
   }
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+  const handleRegenerateField = async (
+    fieldName: keyof typeof formData
+  ) => {
+    if (!file) {
+      setErrorWithAutoClear('No file selected')
+      return
+    }
+
+    setRegenerating(fieldName)
+    setError('')
+
+    try {
+      // Create proper AIMetadata object for regenerateField
+      const currentData = {
+        image_name: formData.image_name,
+        description: formData.description,
+        category: formData.category,
+        hashtags: formData.hashtags
+          .split(',')
+          .map(tag => tag.trim())
+          .filter(tag => tag.length > 0),
+      }
+
+      const newValue = await regenerateField(file, fieldName, currentData)
+
+      // Handle different field types
+      let processedValue = newValue
+      if (fieldName === 'hashtags' && Array.isArray(newValue)) {
+        processedValue = newValue.slice(0, MAX_HASHTAGS).join(', ')
+      } else if (Array.isArray(newValue)) {
+        processedValue = newValue.join(', ')
+      }
+
+      setFormData(prev => ({
+        ...prev,
+        [fieldName]: processedValue || prev[fieldName],
+      }))
+
+      showToast(`${fieldName} regenerated successfully`, 'success')
+    } catch (error) {
+      console.error(`Failed to regenerate ${fieldName}:`, error)
+      setErrorWithAutoClear(`Failed to regenerate ${fieldName}`)
+    } finally {
+      setRegenerating('')
+    }
+  }
+
+  const analyzeImageWithAI = async () => {
+    if (!file) {
+      setErrorWithAutoClear('No file selected')
+      return
+    }
+
+    setAiLoading(true)
+    setError('')
+
+    try {
+      const metadata = await generateImageMetadata(file)
+
+      // Ensure hashtags are limited
+      const hashtags = Array.isArray(metadata.hashtags)
+        ? metadata.hashtags.slice(0, MAX_HASHTAGS).join(', ')
+        : metadata.hashtags
+
+      // Update form with AI suggestions, preserving user inputs
+      setFormData(prev => ({
+        image_name: metadata.image_name || prev.image_name || 'Car Image',
+        description: metadata.description || prev.description,
+        category:
+          (metadata.category as CarCategory) ||
+          prev.category ||
+          (CAR_CATEGORIES[0] as CarCategory),
+        hashtags: hashtags || prev.hashtags,
+      }))
+
+      showToast('AI analysis completed successfully', 'success')
+    } catch (error) {
+      console.error('AI Analysis Error:', error)
+      setErrorWithAutoClear('Failed to analyze image with AI. Using fallback...')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const handleChange = (
+    e: React.ChangeEvent<
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+    >
+  ) => {
+    const { name, value } = e.target
+
+    // Validate hashtags count
+    if (name === 'hashtags') {
+      const tags = value.split(',').filter(tag => tag.trim().length > 0)
+      if (tags.length > MAX_HASHTAGS) {
+        setErrorWithAutoClear(`Maximum ${MAX_HASHTAGS} hashtags allowed`)
+        return
+      }
+    }
+
     setFormData(prev => ({
       ...prev,
-      [e.target.name]: e.target.value,
+      [name]: value,
     }))
+  }
+
+  const handleFileSelected = (data: {
+    file: File
+    preview: string
+    name: string
+  }) => {
+    const validationError = validateFile(data.file)
+    
+    if (validationError) {
+      setErrorWithAutoClear(validationError)
+      return
+    }
+
+    setFile(data.file)
+    setPreview(data.preview)
+    setFormData(prev => ({
+      ...prev,
+      image_name: data.name,
+    }))
+    setError('')
+  }
+
+  const validateForm = (): boolean => {
+    if (!formData.image_name.trim()) {
+      setErrorWithAutoClear('Please enter an image name')
+      return false
+    }
+
+    if (formData.image_name.trim().length < 3) {
+      setErrorWithAutoClear('Image name must be at least 3 characters')
+      return false
+    }
+
+    if (!formData.category) {
+      setErrorWithAutoClear('Please select a category')
+      return false
+    }
+
+    return true
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!user || !file) return
 
-    if (!formData.image_name.trim()) {
-      setError('Please enter an image name')
+    if (!user || !file) {
+      setErrorWithAutoClear('User not authenticated or no file selected')
       return
     }
 
-    if (!formData.category) {
-      setError('Please select a category')
+    if (!validateForm()) {
       return
     }
 
     setLoading(true)
-    setError('')
+    setShowUploadLoader(true)
     setUploadProgress(0)
+    setError('')
 
     try {
       const hashtags = formData.hashtags
         .split(',')
         .map(tag => tag.trim())
         .filter(tag => tag.length > 0)
+        .slice(0, MAX_HASHTAGS)
 
+      // Simulate upload progress
       const progressInterval = setInterval(() => {
         setUploadProgress(prev => {
-          if (prev >= 90) {
+          if (prev >= 100) {
             clearInterval(progressInterval)
-            return 90
+            return 100
           }
           return prev + 10
         })
-      }, 200)
+      }, 300)
 
       await uploadImage(user.id, file, {
-        image_name: formData.image_name,
-        description: formData.description || undefined,
+        image_name: formData.image_name.trim(),
+        description: formData.description.trim() || undefined,
         category: formData.category,
         hashtags: hashtags.length > 0 ? hashtags : undefined,
       })
 
       clearInterval(progressInterval)
       setUploadProgress(100)
-      setSuccess(true)
-
+      
       setTimeout(() => {
-        setFile(null)
-        setPreview(null)
+        setShowUploadLoader(false)
+        showToast('🎉 Image uploaded successfully!', 'success')
         setFormData({
           image_name: '',
           description: '',
           category: '',
           hashtags: '',
         })
-        setUploadProgress(0)
-        setSuccess(false)
-        onUploadSuccess()
-      }, 2000)
+        setSuccess(true)
+        handleRemoveFile()
+        onUpload()
+      }, 1000)
+
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload image')
+      setShowUploadLoader(false)
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to upload image'
+      setErrorWithAutoClear(errorMessage)
+      showToast(errorMessage, 'error')
+      console.error('Upload error:', err)
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="bg-[#1A212B] rounded-2xl p-6 animate-fade-in">
-      <h2 className="text-3xl font-bold text-white mb-2">Upload Car Images</h2>
-      <p className="text-gray-400 text-base mb-8">Share your collection with the community</p>
+    <>
+      <UploadLoader isVisible={showUploadLoader} uploadProgress={uploadProgress} />
+      
+      <div className="bg-[#1A212B] rounded-2xl p-6 animate-fade-in">
+        <div className="flex items-center justify-between mb-2">
+        <h2 className="text-3xl font-bold text-white">Upload Car Images</h2>
+        <Button
+          onClick={analyzeImageWithAI}
+          disabled={aiLoading || !file}
+          className="flex items-center gap-2"
+        >
+          {aiLoading ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Wand2 className="w-4 h-4" />
+          )}
+          AI Suggestions
+        </Button>
+      </div>
+      <p className="mb-8 text-base text-gray-400">
+        Share your collection with the community
+      </p>
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {error && (
-          <div className="bg-red-500/10 border border-red-500 rounded-lg p-3 animate-shake">
-            <p className="text-red-500 text-xs flex items-center gap-2">
+          <div className="p-3 border border-red-500 rounded-lg bg-red-500/10 animate-shake">
+            <p className="flex items-center gap-2 text-xs text-red-500">
               <AlertCircle size={16} />
               {error}
             </p>
@@ -175,8 +333,8 @@ export const UploadForm = ({ onUploadSuccess }: UploadFormProps) => {
         )}
 
         {success && (
-          <div className="bg-green-500/10 border border-green-500 rounded-lg p-3 animate-fade-in">
-            <p className="text-green-500 text-xs flex items-center gap-2">
+          <div className="p-3 border border-green-500 rounded-lg bg-green-500/10 animate-fade-in">
+            <p className="flex items-center gap-2 text-xs text-green-500">
               <Check size={16} />
               Image uploaded successfully!
             </p>
@@ -184,112 +342,175 @@ export const UploadForm = ({ onUploadSuccess }: UploadFormProps) => {
         )}
 
         {!preview ? (
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={handleClick}
-            className={`min-h-[240px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-all duration-300 ${
-              isDragOver
-                ? 'border-[#00D9FF] bg-[#1A212B] border-solid'
-                : 'border-[#00D9FF] bg-[#1A212B]/50 hover:bg-[#1A212B] hover:border-solid'
-            }`}
-          >
-            <Cloud className="w-16 h-16 text-[#00D9FF] mb-4 animate-bounce" />
-            <p className="text-lg text-gray-300 mb-1">Drag & drop images</p>
-            <p className="text-lg text-gray-400 mb-4">or click to browse</p>
-            <p className="text-sm text-gray-500">.jpg, .png, .webp</p>
-            <p className="text-sm text-gray-500">Max 5MB</p>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              accept="image/jpeg,image/jpg,image/png,image/webp"
-              onChange={handleFileChange}
-            />
-          </div>
+          <DragDropZone
+            onImageSelected={handleFileSelected}
+            error={error}
+          />
         ) : (
           <div className="space-y-6 animate-fade-in">
             <div className="relative inline-block">
               <img
                 src={preview}
                 alt="Preview"
-                className="w-32 h-32 object-cover rounded-xl"
+                className="object-cover w-32 h-32 rounded-xl"
               />
               <button
                 type="button"
                 onClick={handleRemoveFile}
-                className="absolute -top-2 -right-2 w-8 h-8 bg-red-500 rounded-full hover:bg-red-600 transition-colors flex items-center justify-center"
+                className="absolute flex items-center justify-center w-8 h-8 transition-colors bg-red-500 rounded-full -top-2 -right-2 hover:bg-red-600"
               >
                 <X size={16} className="text-white" />
               </button>
             </div>
 
             <div>
-              <label htmlFor="image_name" className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2">
+              <label
+                htmlFor="image_name"
+                className="block mb-2 text-xs font-semibold tracking-wider text-gray-300 uppercase"
+              >
                 Image Name *
               </label>
-              <input
-                type="text"
-                id="image_name"
-                name="image_name"
-                value={formData.image_name}
-                onChange={handleChange}
-                required
-                className="w-full h-12 px-4 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300"
-                placeholder="Enter image title"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  id="image_name"
+                  name="image_name"
+                  value={formData.image_name}
+                  onChange={handleChange}
+                  required
+                  maxLength={100}
+                  className="w-full h-12 px-4 pr-12 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300"
+                  placeholder="Enter image title"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateField('image_name')}
+                  disabled={regenerating === 'image_name' || !file || aiLoading}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-[#00D9FF] disabled:opacity-50 disabled:hover:text-gray-400"
+                  title="Regenerate image name"
+                >
+                  {regenerating === 'image_name' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {formData.image_name.length}/100
+              </p>
             </div>
 
             <div>
-              <label htmlFor="category" className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2">
+              <label
+                htmlFor="category"
+                className="block mb-2 text-xs font-semibold tracking-wider text-gray-300 uppercase"
+              >
                 Category *
               </label>
-              <select
-                id="category"
-                name="category"
-                value={formData.category}
-                onChange={handleChange}
-                required
-                className="w-full h-12 px-4 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300 cursor-pointer"
-              >
-                <option value="">Select a category</option>
-                {CAR_CATEGORIES.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <select
+                  id="category"
+                  name="category"
+                  value={formData.category}
+                  onChange={handleChange}
+                  required
+                  className="w-full h-12 px-4 pr-12 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300 cursor-pointer"
+                >
+                  <option value="">Select a category</option>
+                  {CAR_CATEGORIES.map(cat => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateField('category')}
+                  disabled={regenerating === 'category' || !file || aiLoading}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-[#00D9FF] disabled:opacity-50 disabled:hover:text-gray-400"
+                  title="Regenerate category"
+                >
+                  {regenerating === 'category' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
             </div>
 
             <div>
-              <label htmlFor="description" className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2">
+              <label
+                htmlFor="description"
+                className="block mb-2 text-xs font-semibold tracking-wider text-gray-300 uppercase"
+              >
                 Description
               </label>
-              <textarea
-                id="description"
-                name="description"
-                value={formData.description}
-                onChange={handleChange}
-                rows={3}
-                className="w-full px-4 py-3 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300 resize-none"
-                placeholder="Tell us about this car..."
-              />
+              <div className="relative">
+                <textarea
+                  id="description"
+                  name="description"
+                  value={formData.description}
+                  onChange={handleChange}
+                  rows={3}
+                  maxLength={500}
+                  className="w-full px-4 pr-12 py-3 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300 resize-none"
+                  placeholder="Tell us about this car..."
+                />
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateField('description')}
+                  disabled={regenerating === 'description' || !file || aiLoading}
+                  className="absolute right-2 top-4 p-2 text-gray-400 hover:text-[#00D9FF] disabled:opacity-50 disabled:hover:text-gray-400"
+                  title="Regenerate description"
+                >
+                  {regenerating === 'description' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {formData.description.length}/500
+              </p>
             </div>
 
             <div>
-              <label htmlFor="hashtags" className="block text-xs font-semibold text-gray-300 uppercase tracking-wider mb-2">
-                Hashtags
+              <label
+                htmlFor="hashtags"
+                className="block mb-2 text-xs font-semibold tracking-wider text-gray-300 uppercase"
+              >
+                Hashtags (max {MAX_HASHTAGS})
               </label>
-              <input
-                type="text"
-                id="hashtags"
-                name="hashtags"
-                value={formData.hashtags}
-                onChange={handleChange}
-                className="w-full h-12 px-4 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300"
-                placeholder="ferrari, red, supercar (comma separated)"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  id="hashtags"
+                  name="hashtags"
+                  value={formData.hashtags}
+                  onChange={handleChange}
+                  className="w-full h-12 px-4 pr-12 bg-[#0F1419] border border-gray-700 rounded-lg focus:outline-none focus:border-[#00D9FF] focus:shadow-[0_0_12px_rgba(0,217,255,0.3)] text-white transition-all duration-300"
+                  placeholder="ferrari, red, supercar (comma separated)"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleRegenerateField('hashtags')}
+                  disabled={regenerating === 'hashtags' || !file || aiLoading}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-[#00D9FF] disabled:opacity-50 disabled:hover:text-gray-400"
+                  title="Regenerate hashtags"
+                >
+                  {regenerating === 'hashtags' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                {formData.hashtags.split(',').filter(tag => tag.trim().length > 0).length}/{MAX_HASHTAGS}
+              </p>
             </div>
 
             <button
@@ -309,7 +530,7 @@ export const UploadForm = ({ onUploadSuccess }: UploadFormProps) => {
 
             {loading && (
               <div className="space-y-2">
-                <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div className="w-full h-2 overflow-hidden bg-gray-700 rounded-full">
                   <div
                     className={`h-full rounded-full transition-all duration-300 ${
                       uploadProgress === 100 ? 'bg-green-500' : 'bg-[#00D9FF]'
@@ -317,12 +538,15 @@ export const UploadForm = ({ onUploadSuccess }: UploadFormProps) => {
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
-                <p className="text-sm text-gray-400 text-center">{uploadProgress}%</p>
+                <p className="text-sm text-center text-gray-400">
+                  {Math.round(uploadProgress)}%
+                </p>
               </div>
             )}
           </div>
         )}
       </form>
     </div>
+    </>
   )
 }

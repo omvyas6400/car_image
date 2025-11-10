@@ -1,5 +1,7 @@
 import { SignIn } from '../components/auth/SignIn'
 
-export const SignInPage = () => {
+const SignInPage = () => {
   return <SignIn />
 }
+
+export default SignInPage

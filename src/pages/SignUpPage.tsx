@@ -1,5 +1,7 @@
 import { SignUp } from '../components/auth/SignUp'
 
-export const SignUpPage = () => {
+const SignUpPage = () => {
   return <SignUp />
 }
+
+export default SignUpPage

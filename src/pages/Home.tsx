@@ -5,7 +5,7 @@ import { useAuth } from '../hooks/useAuth'
 import { ImageCard } from '../components/home/ImageCard'
 import { LoadingSpinner } from '../components/common/LoadingSpinner'
 
-export const Home = () => {
+const Home = () => {
   const { user } = useAuth()
   const [images, setImages] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
@@ -86,3 +86,5 @@ export const Home = () => {
     </div>
   )
 }
+
+export default Home

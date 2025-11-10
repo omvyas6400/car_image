@@ -16,3 +16,6 @@ export const LoadingSpinner = ({ size = 'medium', className = '' }: LoadingSpinn
     <Loader2 className={`animate-spin text-indigo-500 ${sizeClasses[size]} ${className}`} />
   )
 }
+
+// Export both named and default export
+export default LoadingSpinner
